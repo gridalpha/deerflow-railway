@@ -198,9 +198,13 @@ memory:
   max_injection_tokens: 2000
   token_counting: tiktoken
 
-# Custom-agent SOUL/USER.md management over HTTP. Off, as upstream ships it.
+# Custom-agent SOUL/USER.md management over HTTP. Upstream ships this off and
+# asks for "a trusted authenticated admin boundary" first -- which this
+# deployment has: every route needs a session, self-registration is closed at
+# the proxy, and agents are written per-user under the volume. Left off, the
+# frontend's whole Agents section answers "not enabled on this server".
 agents_api:
-  enabled: false
+  enabled: true
 
 # Agent-managed writes under skills/custom. Off, as upstream ships it.
 skill_evolution:
