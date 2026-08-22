@@ -129,3 +129,10 @@ long-term memory. Everything relational is in Postgres.
 
 DeerFlow is MIT-licensed by ByteDance. This repository only contains deployment
 glue and carries no upstream source.
+
+## assets/
+
+`assets/deerflow-light.svg` is upstream's `frontend/public/images/deer.svg`
+(MIT) with a light `fill` added on the root element. Upstream uses the mark as
+a CSS mask, so it ships with no fill and renders black — invisible against
+Railway's dark service tiles.
