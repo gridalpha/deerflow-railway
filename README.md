@@ -29,7 +29,7 @@ Both images build from the **repo root** — set `RAILWAY_DOCKERFILE_PATH` to
 ## Gateway
 
 `gateway/config.yaml` is upstream's `config.example.yaml` (config version 14)
-with four changes:
+with five changes:
 
 - **Three model entries** — an OpenAI-compatible one (which also covers DeepSeek,
   OpenRouter, Groq, Volcengine and vLLM), Anthropic, and Gemini. Set the API key
@@ -40,6 +40,11 @@ with four changes:
 - **`memory.storage_path: .deer-flow/memory.json`** — upstream's default resolves
   under `/app/backend`, which is the container layer and is thrown away on every
   deploy.
+- **A `checkpointer` section alongside `database`**, both on the same Postgres.
+  `make_store()` is the one consumer that never learned about the unified
+  `database` section: it reads `checkpointer` and nothing else, so without it
+  the LangGraph Store silently falls back to `InMemoryStore` and every thread
+  vanishes on restart, on a green deployment.
 - **`sandbox.use: LocalSandboxProvider`** with `allow_host_bash: false`. The
   container-based AIO sandbox needs a Docker socket or a Kubernetes provisioner,
   neither of which exists on Railway.
@@ -92,8 +97,8 @@ changes Railway forces:
 | `PORT` | `8001` | set by Railway |
 | `DATABASE_URL` | — | `${{Postgres.DATABASE_URL}}` |
 | `AUTH_JWT_SECRET` | — | signs session tokens; must stay stable or everyone is logged out |
-| `LLM_MODEL` / `LLM_BASE_URL` / `LLM_API_KEY` | `gpt-4.1` / `https://api.openai.com/v1` / empty | any OpenAI-compatible endpoint |
-| `ANTHROPIC_MODEL` / `ANTHROPIC_API_KEY` | `claude-sonnet-4-5-20250929` / empty | |
+| `LLM_MODEL` / `LLM_BASE_URL` / `LLM_API_KEY` | `gpt-5` / `https://api.openai.com/v1` / empty | any OpenAI-compatible endpoint |
+| `ANTHROPIC_MODEL` / `ANTHROPIC_API_KEY` | `claude-sonnet-4-6` / empty | |
 | `GEMINI_MODEL` / `GEMINI_API_KEY` | `gemini-2.5-flash` / empty | |
 | `DEERFLOW_ADMIN_EMAIL` / `DEERFLOW_ADMIN_PASSWORD` | — | seeds the first admin at boot; at least 8 characters and a mixed character set |
 | `DEER_FLOW_ENV` | `production` | also hard-disables `DEER_FLOW_AUTH_DISABLED` |
