@@ -27,6 +27,19 @@ RUN set -eux; \
     rm -rf /tmp/deer-flow-*; \
     ls -A /app/skills
 
+# The v2.0.0 image was built without `UV_EXTRAS=postgres` (upstream added that
+# build-arg to the release workflow after cutting the tag), so a Gateway
+# configured for Postgres dies at startup on
+# "database.backend is set to 'postgres' but asyncpg is not installed."
+# These are exactly the `postgres` extra from backend/packages/harness's
+# pyproject.toml, installed into the image's existing virtualenv; all four ship
+# wheels, so no compiler is needed in this layer.
+RUN uv pip install --python /app/backend/.venv/bin/python \
+      "asyncpg>=0.29" \
+      "langgraph-checkpoint-postgres>=3.0.5" \
+      "psycopg[binary]>=3.3.3" \
+      "psycopg-pool>=3.3.0"
+
 # Upstream's extensions file is an empty object unless the operator adds MCP
 # extensions; ship the empty default so the Gateway never reads a missing path.
 RUN printf '{}\n' > /app/backend/extensions_config.json
