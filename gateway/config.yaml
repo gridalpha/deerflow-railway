@@ -214,6 +214,16 @@ skill_evolution:
 # events. The volume mounted at DEER_FLOW_HOME holds thread workspaces,
 # uploads and long-term memory.
 # ---------------------------------------------------------------------------
+# The LangGraph Store is the one consumer that never learned about the unified
+# `database` section: make_store() reads `checkpointer` and nothing else, so
+# without this block it silently falls back to InMemoryStore and every thread
+# disappears on restart -- on a green deployment, with only a WARNING to show
+# for it. Both sections point at the same database, which is what upstream's
+# "checkpointer takes precedence for LangGraph state" note describes.
+checkpointer:
+  type: postgres
+  connection_string: $DATABASE_URL
+
 database:
   backend: postgres
   postgres_url: $DATABASE_URL
