@@ -1,0 +1,213 @@
+# DeerFlow edge proxy for Railway.
+#
+# Derived from upstream docker/nginx/nginx.conf. Railway's edge routes strictly
+# by host and has no path routing, so this service is what splits one public
+# domain between the Next.js frontend and the FastAPI Gateway.
+#
+# Differences from upstream, all forced by the platform:
+#   * listen on ${PORT}
+#   * resolver taken from the container's /etc/resolv.conf, with IPv6 left ON
+#     (*.railway.internal resolves AAAA and the private network is IPv6-first)
+#   * upstream hosts come from variables, so they re-resolve per request and
+#     survive a redeploy of the service behind them
+#   * /healthz answers here rather than proxying, so this service's health
+#     check tests itself and not an upstream that may not exist yet
+#   * the /api/sandboxes location is dropped: that provisioner is Kubernetes-only
+#   * POST /api/v1/auth/register is closed unless DEERFLOW_ALLOW_REGISTRATION=true
+#
+# Only the ${...} names listed in the entrypoint's envsubst call are
+# substituted; nginx's own $variables survive untouched.
+
+worker_processes 2;
+
+events {
+    worker_connections 1024;
+}
+
+pid /tmp/nginx.pid;
+
+http {
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 65;
+    types_hash_max_size 2048;
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_min_length 1024;
+    gzip_comp_level 5;
+    gzip_types
+        text/css
+        text/javascript
+        application/javascript
+        application/json
+        application/xml
+        image/svg+xml;
+
+    access_log /dev/stdout;
+    error_log /dev/stderr;
+
+    resolver ${NGINX_RESOLVER} valid=10s;
+
+    # Railway's edge terminates TLS and always sets X-Forwarded-Proto, so the
+    # Gateway sees the browser's real scheme; the map keeps the local HTTP case
+    # working too.
+    map $http_x_forwarded_proto $forwarded_proto {
+        default    $scheme;
+        "~*^https" https;
+    }
+
+    map $http_upgrade $connection_upgrade {
+        default upgrade;
+        ''      '';
+    }
+
+    server {
+        listen ${PORT} default_server;
+        listen [::]:${PORT} default_server;
+        server_name _;
+
+        set $gateway_upstream ${GATEWAY_UPSTREAM};
+        set $frontend_upstream ${FRONTEND_UPSTREAM};
+
+        proxy_buffering off;
+        proxy_cache off;
+
+        # This service's own liveness route. Never proxied: until the Gateway
+        # owns a deployment its private hostname does not resolve at all, and a
+        # health check pointed at it would fail this service's first rollout.
+        location = /healthz {
+            access_log off;
+            add_header Content-Type text/plain always;
+            return 200 'ok';
+        }
+
+        # DeerFlow 2.0.0 has no allow_registration switch, so /register is open
+        # to the internet and hands any visitor an account that spends the
+        # deployer's model credits. Closed here; set DEERFLOW_ALLOW_REGISTRATION
+        # to true on this service to run an open-signup instance.
+        ${REGISTRATION_BLOCK}
+
+        location /api/langgraph/ {
+            rewrite ^/api/langgraph/(.*) /api/$1 break;
+            proxy_pass http://$gateway_upstream;
+            proxy_http_version 1.1;
+
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $forwarded_proto;
+            proxy_set_header Connection '';
+
+            proxy_set_header X-Accel-Buffering no;
+
+            client_max_body_size 20M;
+            proxy_request_buffering off;
+
+            proxy_connect_timeout 600s;
+            proxy_send_timeout 600s;
+            proxy_read_timeout 600s;
+
+            chunked_transfer_encoding on;
+        }
+
+        location ~ ^/api/threads/[^/]+/uploads {
+            proxy_pass http://$gateway_upstream;
+            proxy_http_version 1.1;
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $forwarded_proto;
+
+            client_max_body_size 100M;
+            proxy_request_buffering off;
+        }
+
+        # Live browser stream is a WebSocket upgrade and must be matched before
+        # the generic /api/ locations, which do not forward Upgrade/Connection.
+        location ~ ^/api/threads/[^/]+/browser/stream {
+            proxy_pass http://$gateway_upstream;
+            proxy_http_version 1.1;
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $forwarded_proto;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection 'upgrade';
+            proxy_cache_bypass $http_upgrade;
+
+            proxy_connect_timeout 600s;
+            proxy_send_timeout 600s;
+            proxy_read_timeout 600s;
+        }
+
+        # Every remaining Gateway route: /api/models, /api/memory, /api/mcp,
+        # /api/skills, /api/agents, /api/threads, /api/v1/auth/*, /api/runs.
+        location /api/ {
+            proxy_pass http://$gateway_upstream;
+            proxy_http_version 1.1;
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $forwarded_proto;
+            proxy_set_header X-Accel-Buffering no;
+
+            client_max_body_size 20M;
+
+            proxy_connect_timeout 600s;
+            proxy_send_timeout 600s;
+            proxy_read_timeout 600s;
+        }
+
+        location /health {
+            proxy_pass http://$gateway_upstream;
+            proxy_http_version 1.1;
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Forwarded-Proto $forwarded_proto;
+        }
+
+        location /docs {
+            proxy_pass http://$gateway_upstream;
+            proxy_http_version 1.1;
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Forwarded-Proto $forwarded_proto;
+        }
+
+        location /redoc {
+            proxy_pass http://$gateway_upstream;
+            proxy_http_version 1.1;
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Forwarded-Proto $forwarded_proto;
+        }
+
+        location /openapi.json {
+            proxy_pass http://$gateway_upstream;
+            proxy_http_version 1.1;
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Forwarded-Proto $forwarded_proto;
+        }
+
+        location / {
+            proxy_pass http://$frontend_upstream;
+            proxy_http_version 1.1;
+
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $forwarded_proto;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection $connection_upgrade;
+            proxy_cache_bypass $http_upgrade;
+
+            client_max_body_size 20M;
+
+            proxy_connect_timeout 600s;
+            proxy_send_timeout 600s;
+            proxy_read_timeout 600s;
+        }
+    }
+}

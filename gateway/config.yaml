@@ -1,0 +1,225 @@
+# DeerFlow Gateway configuration for Railway.
+# Mirrors upstream `config.example.yaml` (config_version 14) with only the
+# changes a Railway deployment needs. Every `$VAR` is resolved from the
+# container environment at load time -- an unset one raises at boot, so each
+# has a default set on the Railway service.
+
+config_version: 14
+
+log_level: info
+
+token_usage:
+  enabled: true
+
+# ---------------------------------------------------------------------------
+# Models
+#
+# Three entries, one per provider family. Set the API key of the provider you
+# want; the others stay inert (they are only constructed when a run selects
+# them, so an empty key never blocks startup).
+#
+# The first entry speaks the OpenAI wire protocol, so it also covers DeepSeek,
+# OpenRouter, Groq, Together, Volcengine/Ark, vLLM and any other
+# OpenAI-compatible endpoint -- point LLM_BASE_URL at it and set LLM_MODEL.
+# ---------------------------------------------------------------------------
+models:
+  - name: default
+    display_name: OpenAI-compatible
+    use: langchain_openai:ChatOpenAI
+    model: $LLM_MODEL
+    api_key: $LLM_API_KEY
+    base_url: $LLM_BASE_URL
+    request_timeout: 600.0
+    max_retries: 2
+    supports_vision: true
+
+  - name: anthropic
+    display_name: Anthropic Claude
+    use: langchain_anthropic:ChatAnthropic
+    model: $ANTHROPIC_MODEL
+    api_key: $ANTHROPIC_API_KEY
+    max_tokens: 8192
+    supports_thinking: true
+    supports_vision: true
+
+  - name: gemini
+    display_name: Google Gemini
+    use: langchain_google_genai:ChatGoogleGenerativeAI
+    model: $GEMINI_MODEL
+    api_key: $GEMINI_API_KEY
+    supports_vision: true
+
+tool_groups:
+  - name: web
+  - name: file:read
+  - name: file:write
+  - name: bash
+
+tools:
+  # DuckDuckGo needs no API key, so a fresh deployment can research immediately.
+  - name: web_search
+    group: web
+    use: deerflow.community.ddg_search.tools:web_search_tool
+    max_results: 5
+
+  - name: web_fetch
+    group: web
+    use: deerflow.community.jina_ai.tools:web_fetch_tool
+    timeout: 10
+
+  - name: image_search
+    group: web
+    use: deerflow.community.image_search.tools:image_search_tool
+    max_results: 5
+
+  - name: ls
+    group: file:read
+    use: deerflow.sandbox.tools:ls_tool
+
+  - name: read_file
+    group: file:read
+    use: deerflow.sandbox.tools:read_file_tool
+
+  - name: glob
+    group: file:read
+    use: deerflow.sandbox.tools:glob_tool
+    max_results: 200
+
+  - name: grep
+    group: file:read
+    use: deerflow.sandbox.tools:grep_tool
+    max_results: 100
+
+  - name: write_file
+    group: file:write
+    use: deerflow.sandbox.tools:write_file_tool
+
+  - name: str_replace
+    group: file:write
+    use: deerflow.sandbox.tools:str_replace_tool
+
+  - name: bash
+    group: bash
+    use: deerflow.sandbox.tools:bash_tool
+
+tool_search:
+  enabled: false
+
+tool_output:
+  enabled: true
+  externalize_min_chars: 12000
+  preview_head_chars: 2000
+  preview_tail_chars: 1000
+  fallback_max_chars: 30000
+  fallback_head_chars: 8000
+  fallback_tail_chars: 3000
+  storage_subdir: ".tool-results"
+  exempt_tools:
+    - read_file
+    - read_file_tool
+
+suggestions:
+  enabled: true
+
+loop_detection:
+  enabled: true
+  warn_threshold: 3
+  hard_limit: 5
+  window_size: 20
+  max_tracked_threads: 100
+  tool_freq_warn: 30
+  tool_freq_hard_limit: 50
+
+safety_finish_reason:
+  enabled: true
+
+uploads:
+  max_files: 10
+  max_file_size: 52428800    # 50 MiB
+  max_total_size: 104857600  # 100 MiB
+  auto_convert_documents: false
+  pdf_converter: auto
+
+# ---------------------------------------------------------------------------
+# Sandbox
+#
+# LocalSandboxProvider only. The container-based AIO sandbox needs a Docker
+# socket or a Kubernetes provisioner, neither of which exists on Railway.
+# `allow_host_bash` stays at upstream's default of false: LocalSandboxProvider
+# is not an isolation boundary, so host shell access would hand every logged-in
+# user command execution inside the Gateway container.
+# ---------------------------------------------------------------------------
+sandbox:
+  use: deerflow.sandbox.local:LocalSandboxProvider
+  allow_host_bash: false
+  bash_output_max_chars: 20000
+  read_file_output_max_chars: 50000
+  ls_output_max_chars: 20000
+
+skills:
+  container_path: /mnt/skills
+
+title:
+  enabled: true
+  max_words: 6
+  max_chars: 60
+  model_name: null
+
+summarization:
+  enabled: true
+  model_name: null
+  trigger:
+    - type: tokens
+      value: 32000
+  keep:
+    type: messages
+    value: 10
+  trim_tokens_to_summarize: 15564
+  summary_prompt: null
+  preserve_recent_skill_count: 5
+  preserve_recent_skill_tokens: 25000
+  preserve_recent_skill_tokens_per_skill: 5000
+  skill_file_read_tool_names:
+    - read_file
+    - read
+    - view
+    - cat
+
+memory:
+  enabled: true
+  # Upstream's default `memory.json` resolves under /app/backend, which is the
+  # container layer and is discarded on every deploy. Keep it on the volume.
+  storage_path: .deer-flow/memory.json
+  debounce_seconds: 30
+  model_name: null
+  max_facts: 100
+  fact_confidence_threshold: 0.7
+  injection_enabled: true
+  max_injection_tokens: 2000
+  token_counting: tiktoken
+
+# Custom-agent SOUL/USER.md management over HTTP. Off, as upstream ships it.
+agents_api:
+  enabled: false
+
+# Agent-managed writes under skills/custom. Off, as upstream ships it.
+skill_evolution:
+  enabled: false
+  moderation_model_name: null
+
+# ---------------------------------------------------------------------------
+# Persistence
+#
+# Postgres holds the checkpointer, the LangGraph store, users, threads and run
+# events. The volume mounted at DEER_FLOW_HOME holds thread workspaces,
+# uploads and long-term memory.
+# ---------------------------------------------------------------------------
+database:
+  backend: postgres
+  postgres_url: $DATABASE_URL
+  pool_size: 5
+
+run_events:
+  backend: db
+  max_trace_content: 10240
+  track_token_usage: true
